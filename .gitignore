@@ -10,3 +10,6 @@ cmd/gcrane/gcrane
 cmd/krane/krane
 
 .DS_Store
+coverage.txt
+examples/*/main
+examples/resumable-download/resumable-download
