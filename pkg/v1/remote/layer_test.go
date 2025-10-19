@@ -16,6 +16,7 @@ package remote
 
 import (
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"net/url"
 	"testing"
@@ -144,5 +145,153 @@ func TestRemoteLayerDescriptor(t *testing.T) {
 		t.Fatal(err)
 	} else if got, want := ok, true; got != want {
 		t.Errorf("Exists() = %t != %t", got, want)
+	}
+}
+
+func TestLayerRange(t *testing.T) {
+	// Create a layer with known content
+	layer, err := random.Layer(1024, types.DockerLayer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := layer.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up a fake registry and write the layer to it
+	s := httptest.NewServer(registry.New())
+	defer s.Close()
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst := fmt.Sprintf("%s/test/range@%s", u.Host, digest)
+	ref, err := name.NewDigest(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteLayer(ref.Context(), layer); err != nil {
+		t.Fatalf("failed to WriteLayer: %v", err)
+	}
+
+	// Get the full layer content for comparison
+	rc, err := layer.Compressed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullContent, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test fetching a range of bytes
+	start := int64(10)
+	end := int64(99) // Inclusive, so this is 90 bytes
+	rangeRC, err := LayerRange(ref, start, end)
+	if err != nil {
+		t.Fatalf("LayerRange failed: %v", err)
+	}
+	defer rangeRC.Close()
+
+	rangeContent, err := io.ReadAll(rangeRC)
+	if err != nil {
+		t.Fatalf("reading range content: %v", err)
+	}
+
+	// Verify the range content matches the expected slice
+	expectedContent := fullContent[start : end+1]
+	if len(rangeContent) != len(expectedContent) {
+		t.Errorf("range content length = %d, want %d", len(rangeContent), len(expectedContent))
+	}
+
+	for i := 0; i < len(expectedContent) && i < len(rangeContent); i++ {
+		if rangeContent[i] != expectedContent[i] {
+			t.Errorf("byte at offset %d: got %d, want %d", i, rangeContent[i], expectedContent[i])
+			break
+		}
+	}
+}
+
+func TestLayerRangeMultiple(t *testing.T) {
+	// Create a layer with known content
+	layer, err := random.Layer(2048, types.DockerLayer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := layer.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up a fake registry and write the layer to it
+	s := httptest.NewServer(registry.New())
+	defer s.Close()
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst := fmt.Sprintf("%s/test/multirange@%s", u.Host, digest)
+	ref, err := name.NewDigest(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteLayer(ref.Context(), layer); err != nil {
+		t.Fatalf("failed to WriteLayer: %v", err)
+	}
+
+	// Get the full layer content for comparison
+	rc, err := layer.Compressed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullContent, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test fetching multiple different ranges
+	testCases := []struct {
+		name  string
+		start int64
+		end   int64
+	}{
+		{"first_100_bytes", 0, 99},
+		{"middle_range", 500, 699},
+		{"last_100_bytes", int64(len(fullContent) - 100), int64(len(fullContent) - 1)},
+		{"single_byte", 42, 42},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rangeRC, err := LayerRange(ref, tc.start, tc.end)
+			if err != nil {
+				t.Fatalf("LayerRange failed: %v", err)
+			}
+			defer rangeRC.Close()
+
+			rangeContent, err := io.ReadAll(rangeRC)
+			if err != nil {
+				t.Fatalf("reading range content: %v", err)
+			}
+
+			expectedContent := fullContent[tc.start : tc.end+1]
+			if len(rangeContent) != len(expectedContent) {
+				t.Errorf("range content length = %d, want %d", len(rangeContent), len(expectedContent))
+			}
+
+			for i := 0; i < len(expectedContent) && i < len(rangeContent); i++ {
+				if rangeContent[i] != expectedContent[i] {
+					t.Errorf("byte at offset %d: got %d, want %d", i, rangeContent[i], expectedContent[i])
+					break
+				}
+			}
+		})
 	}
 }

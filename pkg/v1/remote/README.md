@@ -34,6 +34,46 @@ func main() {
 }
 ```
 
+### Resumable Downloads
+
+The `remote` package supports resumable downloads via HTTP range requests. This is useful for downloading large layers or for resuming interrupted downloads:
+
+```go
+package main
+
+import (
+	"io"
+	"os"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+)
+
+func main() {
+	// Parse a blob reference (digest)
+	ref, err := name.NewDigest("gcr.io/my-repo/my-image@sha256:abcd...")
+	if err != nil {
+		panic(err)
+	}
+
+	// Download a specific byte range (bytes 1000-9999)
+	// This is useful for resuming downloads or fetching specific portions
+	rc, err := remote.LayerRange(ref, 1000, 9999)
+	if err != nil {
+		panic(err)
+	}
+	defer rc.Close()
+
+	// Copy the range to a file or process it
+	_, err = io.Copy(os.Stdout, rc)
+	if err != nil {
+		panic(err)
+	}
+}
+```
+
+Note: When using range requests, hash verification is not performed on the partial content. To verify the integrity of the full blob, download it completely using `remote.Layer()` instead.
+
 ## Structure
 
 <p align="center">

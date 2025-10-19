@@ -246,10 +246,27 @@ func (f *fetcher) headManifest(ctx context.Context, ref name.Reference, acceptab
 }
 
 func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.ReadCloser, error) {
+	return f.fetchBlobRange(ctx, size, h, nil)
+}
+
+// ByteRange represents a byte range for partial blob downloads.
+type ByteRange struct {
+	Start int64 // Starting byte offset (inclusive)
+	End   int64 // Ending byte offset (inclusive)
+}
+
+// fetchBlobRange fetches a blob or a byte range of a blob.
+// If byteRange is nil, fetches the entire blob.
+func (f *fetcher) fetchBlobRange(ctx context.Context, size int64, h v1.Hash, byteRange *ByteRange) (io.ReadCloser, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// Add Range header if byte range is specified
+	if byteRange != nil {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", byteRange.Start, byteRange.End))
 	}
 
 	resp, err := f.client.Do(req.WithContext(ctx))
@@ -257,7 +274,13 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 		return nil, redact.Error(err)
 	}
 
-	if err := transport.CheckError(resp, http.StatusOK); err != nil {
+	// For range requests, we expect either 200 (full content) or 206 (partial content)
+	expectedStatus := http.StatusOK
+	if byteRange != nil {
+		expectedStatus = http.StatusPartialContent
+	}
+
+	if err := transport.CheckError(resp, http.StatusOK, expectedStatus); err != nil {
 		resp.Body.Close()
 		return nil, err
 	}
@@ -266,11 +289,25 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 	// If we have an expected size and Content-Length doesn't match, return an error.
 	// If we don't have an expected size and we do have a Content-Length, use Content-Length.
 	if hsize := resp.ContentLength; hsize != -1 {
-		if size == verify.SizeUnknown {
-			size = hsize
-		} else if hsize != size {
-			return nil, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
+		// For range requests, Content-Length is the size of the range, not the full blob
+		if byteRange != nil {
+			expectedRangeSize := byteRange.End - byteRange.Start + 1
+			if hsize != expectedRangeSize {
+				return nil, fmt.Errorf("GET %s: Content-Length header %d does not match expected range size %d", u.String(), hsize, expectedRangeSize)
+			}
+		} else {
+			if size == verify.SizeUnknown {
+				size = hsize
+			} else if hsize != size {
+				return nil, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
+			}
 		}
+	}
+
+	// For range requests, we cannot verify the hash of partial content
+	if byteRange != nil {
+		// Just return the response body without hash verification
+		return resp.Body, nil
 	}
 
 	return verify.ReadCloser(resp.Body, size, h)
