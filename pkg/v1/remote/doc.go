@@ -14,4 +14,8 @@
 
 // Package remote provides facilities for reading/writing v1.Images from/to
 // a remote image registry.
+//
+// This package supports resumable downloads via HTTP range requests. Use
+// LayerRange to download specific byte ranges of layer blobs, which is useful
+// for resuming interrupted downloads or implementing progressive loading.
 package remote
