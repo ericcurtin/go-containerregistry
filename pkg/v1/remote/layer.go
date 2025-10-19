@@ -27,16 +27,17 @@ import (
 
 // remoteImagelayer implements partial.CompressedLayer
 type remoteLayer struct {
-	ctx     context.Context
-	fetcher fetcher
-	digest  v1.Hash
+	ctx       context.Context
+	fetcher   fetcher
+	digest    v1.Hash
+	byteRange *ByteRange
 }
 
 // Compressed implements partial.CompressedLayer
 func (rl *remoteLayer) Compressed() (io.ReadCloser, error) {
 	// We don't want to log binary layers -- this can break terminals.
 	ctx := redact.NewContext(rl.ctx, "omitting binary blobs from logs")
-	return rl.fetcher.fetchBlob(ctx, verify.SizeUnknown, rl.digest)
+	return rl.fetcher.fetchBlobRange(ctx, verify.SizeUnknown, rl.digest, rl.byteRange)
 }
 
 // Compressed implements partial.CompressedLayer
@@ -74,4 +75,31 @@ func Layer(ref name.Digest, options ...Option) (v1.Layer, error) {
 		return nil, err
 	}
 	return newPuller(o).Layer(o.context, ref)
+}
+
+// LayerRange reads a byte range of the given blob reference from a registry as an io.ReadCloser.
+// A blob reference here is just a punned name.Digest where the digest portion is the
+// digest of the blob to be read and the repository portion is the repo where that blob lives.
+//
+// The byte range is specified with start and end offsets (both inclusive).
+// This is useful for resumable downloads where you want to download a specific portion of a layer.
+//
+// Note: Since this returns partial content, hash verification is not performed on the returned data.
+func LayerRange(ref name.Digest, start, end int64, options ...Option) (io.ReadCloser, error) {
+	o, err := makeOptions(options...)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := makeFetcher(o.context, ref.Context(), o)
+	if err != nil {
+		return nil, err
+	}
+
+	h, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return nil, err
+	}
+
+	return f.fetchBlobRange(o.context, verify.SizeUnknown, h, &ByteRange{Start: start, End: end})
 }
